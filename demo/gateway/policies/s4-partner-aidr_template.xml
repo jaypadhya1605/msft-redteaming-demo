@@ -1,0 +1,152 @@
+<policies>
+    <!--
+        S4 TEMPLATE (not deployed): minimal guardrail + CrowdStrike AIDR at the gateway. Same skeleton as S3 (caller check, model pin, managed identity to the model, x-gateway-route header),with Content Safety swapped for AIDR's guard API on the prompt and the answer.
+        Based on CrowdStrike's published policy: https://github.com/CrowdStrike/aidr-azure-api-management (ai-guard-policy.xml).
+        For production, it should handle AIDR "transformed" (redacted) content.This template only blocks, so the S4 row is a like-for-like comparison with S3.
+
+        Pilot setup:
+        1. Named values in APIM: ai-guard-url (e.g. https://api.<region>.crowdstrike.com/aidr/aiguard)
+           and ai-guard-token (Key Vault-backed secret; never paste the token here).
+        2. Replace {tenant-id}, {allowed-callers}, {target-deployment} the same way gateway.bicep does for S3.
+        3. Add an 'llm-s4-partner-aidr' API in gateway.bicep that loads this file, then run:
+           run-gateway-compare.ps1 -S4Url <S4 route URL>
+        Request/response format: Responses API (what AIDR's policy expects).
+    -->
+    <inbound>
+        <base />
+        <validate-azure-ad-token tenant-id="{tenant-id}" failed-validation-httpcode="401" failed-validation-error-message="Caller is not allowed to use this gateway route.">
+            <audiences>
+                <audience>https://cognitiveservices.azure.com</audience>
+            </audiences>
+            <required-claims>
+                <claim name="oid" match="any">{allowed-callers}</claim>
+            </required-claims>
+        </validate-azure-ad-token>
+
+        <!-- Prompt check: send the user's text to AIDR before the model is called. -->
+        <set-variable name="userText" value="@{
+            var body = context.Request.Body.As<JObject>(preserveContent: true);
+            var input = body["input"];
+            if (input == null) { return ""; }
+            if (input.Type == JTokenType.String) { return input.ToString(); }
+            var text = new System.Text.StringBuilder();
+            foreach (var item in (JArray)input) {
+                if ((string)item["role"] != "user") { continue; }
+                var content = item["content"];
+                if (content == null) { continue; }
+                if (content.Type == JTokenType.String) { text.AppendLine(content.ToString()); continue; }
+                foreach (var part in (JArray)content) {
+                    if ((string)part["type"] == "input_text") { text.AppendLine((string)part["text"]); }
+                }
+            }
+            return text.ToString();
+        }" />
+        <choose>
+            <when condition="@(!string.IsNullOrWhiteSpace((string)context.Variables["userText"]))">
+                <!-- ignore-error="false": if AIDR is unreachable the request fails closed (on-error), it is not forwarded unchecked. -->
+                <send-request mode="new" response-variable-name="aidrInput" timeout="10" ignore-error="false">
+                    <set-url>{{ai-guard-url}}/v1/guard_chat_completions</set-url>
+                    <set-method>POST</set-method>
+                    <set-header name="Authorization" exists-action="override">
+                        <value>Bearer {{ai-guard-token}}</value>
+                    </set-header>
+                    <set-header name="Content-Type" exists-action="override">
+                        <value>application/json</value>
+                    </set-header>
+                    <set-body>@(new JObject(
+                        new JProperty("event_type", "input"),
+                        new JProperty("model", "{target-deployment}"),
+                        new JProperty("guard_input", new JObject(
+                            new JProperty("messages", new JArray(new JObject(
+                                new JProperty("role", "user"),
+                                new JProperty("content", (string)context.Variables["userText"]))))))).ToString())</set-body>
+                </send-request>
+                <choose>
+                    <when condition="@(((IResponse)context.Variables["aidrInput"]).Body.As<JObject>()["result"]?["blocked"]?.Value<bool>() == true)">
+                        <!-- Lesson from S3: don't return a bare 403. Give the person a safe next step. -->
+                        <return-response>
+                            <set-status code="403" reason="Forbidden" />
+                            <set-header name="Content-Type" exists-action="override">
+                                <value>application/json</value>
+                            </set-header>
+                            <set-header name="x-gateway-route" exists-action="override">
+                                <value>S4</value>
+                            </set-header>
+                            <set-body>{"error":{"code":"content_filtered","type":"invalid_request_error","message":"I can't help with that request. If you're in crisis, call or text 988 any time. For other help, contact Patient Access at 555-0100."}}</set-body>
+                        </return-response>
+                    </when>
+                </choose>
+            </when>
+        </choose>
+
+        <set-body>@{ var body = context.Request.Body.As<JObject>(preserveContent: true); body["model"] = "{target-deployment}"; return body.ToString(); }</set-body>
+        <authentication-managed-identity resource="https://cognitiveservices.azure.com" />
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+        <!-- Response check: send the model's answer (Responses API output_text) to AIDR. -->
+        <set-variable name="answerText" value="@{
+            if (context.Response.StatusCode != 200) { return ""; }
+            var body = context.Response.Body.As<JObject>(preserveContent: true);
+            var text = new System.Text.StringBuilder();
+            var output = body["output"] as JArray;
+            if (output == null) { return ""; }
+            foreach (var item in output) {
+                if ((string)item["type"] != "message") { continue; }
+                var content = item["content"] as JArray;
+                if (content == null) { continue; }
+                foreach (var part in content) {
+                    if ((string)part["type"] == "output_text") { text.Append((string)part["text"]); }
+                }
+            }
+            return text.ToString();
+        }" />
+        <choose>
+            <when condition="@(!string.IsNullOrWhiteSpace((string)context.Variables["answerText"]))">
+                <send-request mode="new" response-variable-name="aidrOutput" timeout="10" ignore-error="false">
+                    <set-url>{{ai-guard-url}}/v1/guard_chat_completions</set-url>
+                    <set-method>POST</set-method>
+                    <set-header name="Authorization" exists-action="override">
+                        <value>Bearer {{ai-guard-token}}</value>
+                    </set-header>
+                    <set-header name="Content-Type" exists-action="override">
+                        <value>application/json</value>
+                    </set-header>
+                    <set-body>@(new JObject(
+                        new JProperty("event_type", "output"),
+                        new JProperty("model", "{target-deployment}"),
+                        new JProperty("guard_input", new JObject(
+                            new JProperty("messages", new JArray(new JObject(
+                                new JProperty("role", "assistant"),
+                                new JProperty("content", (string)context.Variables["answerText"]))))))).ToString())</set-body>
+                </send-request>
+                <choose>
+                    <when condition="@(((IResponse)context.Variables["aidrOutput"]).Body.As<JObject>()["result"]?["blocked"]?.Value<bool>() == true)">
+                        <return-response>
+                            <set-status code="403" reason="Forbidden" />
+                            <set-header name="Content-Type" exists-action="override">
+                                <value>application/json</value>
+                            </set-header>
+                            <set-header name="x-gateway-route" exists-action="override">
+                                <value>S4</value>
+                            </set-header>
+                            <set-body>{"error":{"code":"content_filtered","type":"invalid_request_error","message":"I can't share that answer. If you're in crisis, call or text 988 any time. For other help, contact Patient Access at 555-0100."}}</set-body>
+                        </return-response>
+                    </when>
+                </choose>
+            </when>
+        </choose>
+        <set-header name="x-gateway-route" exists-action="override">
+            <value>S4</value>
+        </set-header>
+    </outbound>
+    <on-error>
+        <base />
+        <set-header name="x-gateway-route" exists-action="override">
+            <value>S4</value>
+        </set-header>
+    </on-error>
+</policies>

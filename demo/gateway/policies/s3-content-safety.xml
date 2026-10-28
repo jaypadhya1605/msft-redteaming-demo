@@ -1,0 +1,50 @@
+<policies>
+    <inbound>
+        <base />
+        <!-- S3: minimal guardrail + Azure AI Content Safety at the gateway. Same as S2 plus llm-content-safety on the prompt and the response. -->
+        <!-- Same pattern as CrowdStrike AIDR for APIM (https://github.com/CrowdStrike/aidr-azure-api-management): inspect inbound and outbound, no app or model change. -->
+        <validate-azure-ad-token tenant-id="{tenant-id}" failed-validation-httpcode="401" failed-validation-error-message="Caller is not allowed to use this gateway route.">
+            <audiences>
+                <audience>https://cognitiveservices.azure.com</audience>
+            </audiences>
+            <required-claims>
+                <claim name="oid" match="any">{allowed-callers}</claim>
+            </required-claims>
+        </validate-azure-ad-token>
+        <!-- Prompt check: harm categories plus Prompt Shields (user jailbreak attacks). A block returns 403 before the model is called. -->
+        <llm-content-safety backend-id="content-safety" shield-prompt="true">
+            <categories output-type="EightSeverityLevels">
+                <category name="Hate" threshold="{block-threshold}" />
+                <category name="SelfHarm" threshold="{block-threshold}" />
+                <category name="Sexual" threshold="{block-threshold}" />
+                <category name="Violence" threshold="{block-threshold}" />
+            </categories>
+        </llm-content-safety>
+        <set-body>@{ var body = context.Request.Body.As<JObject>(preserveContent: true); body["model"] = "{target-deployment}"; return body.ToString(); }</set-body>
+        <authentication-managed-identity resource="https://cognitiveservices.azure.com" />
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+        <!-- Response check: the same harm categories on the model's answer. -->
+        <llm-content-safety backend-id="content-safety" shield-prompt="false">
+            <categories output-type="EightSeverityLevels">
+                <category name="Hate" threshold="{block-threshold}" />
+                <category name="SelfHarm" threshold="{block-threshold}" />
+                <category name="Sexual" threshold="{block-threshold}" />
+                <category name="Violence" threshold="{block-threshold}" />
+            </categories>
+        </llm-content-safety>
+        <set-header name="x-gateway-route" exists-action="override">
+            <value>S3</value>
+        </set-header>
+    </outbound>
+    <on-error>
+        <base />
+        <set-header name="x-gateway-route" exists-action="override">
+            <value>S3</value>
+        </set-header>
+    </on-error>
+</policies>

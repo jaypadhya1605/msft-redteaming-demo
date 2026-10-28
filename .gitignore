@@ -1,0 +1,52 @@
+# Evidence is generated locally; never commit it.
+demo/evidence/runs/
+demo/evidence/*.json
+demo/evidence/acceptance-report.*
+smoke-v*.json
+gateway-*.json
+review-decisions.json
+
+# No slides, images, or office documents in this repo.
+*.pptx
+*.ppt
+*.docx
+*.xlsx
+*.pdf
+*.png
+*.jpg
+*.jpeg
+
+# Secrets and key material.
+.env
+.env.*
+!.env.sample
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+*.pfx
+*.p12
+*.p7b
+*.p7c
+*.jks
+*.keystore
+*.ppk
+*.asc
+*.gpg
+*.pgp
+*.csr
+*.kdbx
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+
+# Bicep build output and local tooling.
+*.json.bak
+demo/infra/main.json
+demo/gateway/gateway.json
+.azure/
+.vscode/
+.DS_Store
+Thumbs.db

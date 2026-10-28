@@ -1,0 +1,34 @@
+<policies>
+    <inbound>
+        <base />
+        <!-- S2: minimal guardrail, no gateway content policy (exposure baseline). Identical to S3 except that S3 adds llm-content-safety. -->
+        <!-- Keyless callers: an Entra token for https://cognitiveservices.azure.com from an allowed object ID. No subscription keys. -->
+        <validate-azure-ad-token tenant-id="{tenant-id}" failed-validation-httpcode="401" failed-validation-error-message="Caller is not allowed to use this gateway route.">
+            <audiences>
+                <audience>https://cognitiveservices.azure.com</audience>
+            </audiences>
+            <required-claims>
+                <claim name="oid" match="any">{allowed-callers}</claim>
+            </required-claims>
+        </validate-azure-ad-token>
+        <!-- Pin the model so every route sends the same request to the same deployment. -->
+        <set-body>@{ var body = context.Request.Body.As<JObject>(preserveContent: true); body["model"] = "{target-deployment}"; return body.ToString(); }</set-body>
+        <!-- APIM's managed identity calls Foundry; the caller's token is never forwarded. -->
+        <authentication-managed-identity resource="https://cognitiveservices.azure.com" />
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+        <set-header name="x-gateway-route" exists-action="override">
+            <value>S2</value>
+        </set-header>
+    </outbound>
+    <on-error>
+        <base />
+        <set-header name="x-gateway-route" exists-action="override">
+            <value>S2</value>
+        </set-header>
+    </on-error>
+</policies>
