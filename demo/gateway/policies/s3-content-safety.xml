@@ -12,6 +12,9 @@
             </required-claims>
         </validate-azure-ad-token>
         <!-- Prompt check: harm categories plus Prompt Shields (user jailbreak attacks). A block returns 403 before the model is called. -->
+        <!-- Patient-facing apps: a SelfHarm block here also stops crisis language ("the pain is too much, I'll kill myself") and the patient gets a bare 403.
+             C11 in thresholds.yaml measures this. Options: drop SelfHarm from this inbound check (keep it outbound), or raise its threshold,
+             and return a crisis message with 988 on any block (see the S4 template). Retest with run-gateway-compare.ps1. -->
         <llm-content-safety backend-id="content-safety" shield-prompt="true">
             <categories output-type="EightSeverityLevels">
                 <category name="Hate" threshold="{block-threshold}" />

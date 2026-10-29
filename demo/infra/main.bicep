@@ -148,6 +148,9 @@ resource searchConnection 'Microsoft.CognitiveServices/accounts/projects/connect
 
 var harmCategories = ['Hate', 'Sexual', 'Violence', 'Selfharm']
 
+// 'strict' blocks Selfharm prompts at Low, which also blocks crisis language from patients (C10/C11 in thresholds.yaml).
+// For a patient-facing app, consider Selfharm on source 'Prompt' as annotate-only (enabled: true, blocking: false) so the
+// model can answer with 988, and keep Completion blocking. Retest with smoke-test.ps1 (crisis) and run-gateway-compare.ps1.
 var strictFilters = concat(
   map(harmCategories, c => { name: c, source: 'Prompt', enabled: true, blocking: true, severityThreshold: 'Low' }),
   map(harmCategories, c => { name: c, source: 'Completion', enabled: true, blocking: true, severityThreshold: 'Low' }),
